@@ -17,6 +17,7 @@ type RollbackOptionSetter interface {
 	SetSkipRestart(skipRestart bool)
 	SetPreRestartHook(preRestartHook RollbackHook)
 	SetRemoveMarker(removeMarker bool)
+	SetRetainedHome(retainedHome string)
 }
 
 type RollbackOption func(ros RollbackOptionSetter)

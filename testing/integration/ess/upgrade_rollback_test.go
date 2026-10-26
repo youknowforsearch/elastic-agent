@@ -199,6 +199,18 @@ inputs:
 	// version, otherwise it's possible that it was rolled back to the original version
 	err = upgradetest.CheckHealthyAndVersion(ctx, startFixture, startVersionInfo.Binary)
 	assert.NoError(t, err)
+
+	// The logs of the failed version must be retained after the rollback. The agent rolled back to is an older
+	// build whose startup cleanup does not know about this, so retention must not depend on it.
+	endVersionInfo, err := endFixture.ExecVersion(ctx)
+	require.NoError(t, err, "failed to get end agent build version info")
+	failedHomes, err := filepath.Glob(filepath.Join(startFixture.WorkDir(), "data", "elastic-agent-*"+endVersionInfo.Binary.Commit[:6]))
+	require.NoError(t, err)
+	if assert.Len(t, failedHomes, 1, "the home of the failed upgrade must still be on disk after the rollback") {
+		assert.DirExists(t, filepath.Join(failedHomes[0], "logs"), "the logs of the failed upgrade must be retained")
+		assert.FileExists(t, filepath.Join(failedHomes[0], ".ttl"), "the failed home must be protected by its retention TTL marker")
+		assert.NoDirExists(t, filepath.Join(failedHomes[0], "components"), "the failed home must be stripped down to its logs")
+	}
 }
 
 // TestStandaloneUpgradeRollbackOnRestarts tests the scenario where upgrading to a new version

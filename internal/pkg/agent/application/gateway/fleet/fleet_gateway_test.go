@@ -553,6 +553,55 @@ func TestFleetGatewayCheckinResponseMissingActionsField(t *testing.T) {
 			"error (see https://github.com/elastic/elastic-agent/issues/15397): %+v", unmarshalErrors)
 }
 
+// TestFleetGatewayCheckinDoesNotAdvertiseLogsOnlyRollbacks checks that an install retained only for its logs is not
+// reported to Fleet as an available rollback.
+func TestFleetGatewayCheckinDoesNotAdvertiseLogsOnlyRollbacks(t *testing.T) {
+	agentInfo := &testAgentInfo{}
+	settings := &fleetGatewaySettings{
+		Duration: 5 * time.Second,
+		Backoff:  &backoffSettings{Init: 1 * time.Second, Max: 5 * time.Second},
+	}
+
+	scheduler := scheduler.NewStepper()
+	client := newTestingClient()
+	log, _ := loggertest.New("fleet_gateway")
+	stateStore := newStateStore(t, log)
+
+	validUntil := time.Now().Add(time.Hour)
+	mockRollbacksSrc := ttl.NewMockReadOnlySource(t)
+	mockRollbacksSrc.EXPECT().GetAll().Return(map[string]ttl.TTLMarker{
+		"data/elastic-agent-1.2.3-regular": {Version: "1.2.3", Hash: "regular", ValidUntil: validUntil},
+		"data/elastic-agent-4.5.6-failed":  {Version: "4.5.6", Hash: "failed", ValidUntil: validUntil, LogsOnly: true},
+	}, nil, nil)
+
+	gateway, err := newFleetGatewayWithScheduler(log, settings, agentInfo, client, scheduler, noop.New(), stateStore, NewCheckinStateFetcher(emptyStateFetcher), mockRollbacksSrc)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	var advertised []fleetapi.CheckinRollback
+	waitFn := ackSeq(
+		client.Answer(func(_ context.Context, _ http.Header, body io.Reader) (*http.Response, error) {
+			data, err := io.ReadAll(body)
+			require.NoError(t, err)
+			var checkinRequest fleetapi.CheckinRequest
+			require.NoError(t, json.Unmarshal(data, &checkinRequest))
+			advertised = checkinRequest.Upgrade.Rollbacks
+			return wrapStrToResp(http.StatusOK, `{ "actions": [] }`), nil
+		}),
+	)
+
+	errCh := runFleetGateway(ctx, gateway)
+	scheduler.Next()
+	waitFn()
+	cancel()
+	require.NoError(t, <-errCh)
+
+	require.Len(t, advertised, 1)
+	assert.Equal(t, "1.2.3", advertised[0].Version)
+}
+
 func TestRetriesOnFailures(t *testing.T) {
 	agentInfo := &testAgentInfo{}
 	settings := &fleetGatewaySettings{

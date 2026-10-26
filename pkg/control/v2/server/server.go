@@ -17,6 +17,8 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/status"
 	"go.opentelemetry.io/collector/component/componentstatus"
 
+	"github.com/elastic/elastic-agent/internal/pkg/agent/application/paths"
+	"github.com/elastic/elastic-agent/internal/pkg/agent/application/upgrade"
 	"github.com/elastic/elastic-agent/internal/pkg/agent/application/upgrade/ttl"
 	"github.com/elastic/elastic-agent/pkg/control"
 	"github.com/elastic/elastic-agent/pkg/control/v1/proto"
@@ -383,6 +385,7 @@ func (s *Server) AvailableRollbacks(context.Context, *cproto.Empty) (*cproto.Ava
 			Error: fmt.Sprintf("error fetching rollbacks: %s", err.Error()),
 		}, nil
 	}
+	rollbacks = upgrade.RollbackTargets(s.logger, paths.Top(), rollbacks)
 	protoRollbacks := make([]*cproto.AvailableRollback, 0, len(rollbacks))
 	for home, ttlMarker := range rollbacks {
 		protoRollbacks = append(protoRollbacks, &cproto.AvailableRollback{

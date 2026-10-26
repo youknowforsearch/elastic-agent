@@ -81,6 +81,23 @@ func (u *Upgrader) rollbackToPreviousVersion(ctx context.Context, topDir string,
 	return nil, nil
 }
 
+// RollbackTargets returns the subset of rollbacks that are usable rollback targets.
+// Installs kept only to retain their logs are dropped: those marked LogsOnly and, as a second guard for
+// markers rewritten by agents that do not know the field, those that hold nothing but a logs directory.
+func RollbackTargets(log *logger.Logger, topDir string, rollbacks map[string]ttl.TTLMarker) map[string]ttl.TTLMarker {
+	targets := make(map[string]ttl.TTLMarker, len(rollbacks))
+	for versionedHome, marker := range rollbacks {
+		if marker.LogsOnly {
+			continue
+		}
+		if hasOnlyLogs(log, filepath.Join(topDir, versionedHome)) {
+			continue
+		}
+		targets[versionedHome] = marker
+	}
+	return targets
+}
+
 // findRollbackTarget returns the versionedHome and TTLMarker for the first unexpired entry
 // matching version, or ("", zero, false) if none is found.
 func findRollbackTarget(rollbacks map[string]ttl.TTLMarker, now time.Time, version string) (string, ttl.TTLMarker, bool) {
@@ -99,7 +116,7 @@ func rollbackUsingAgentInstalls(log *logger.Logger, watcherHelper WatcherHelper,
 		return "", "", fmt.Errorf("retrieving available rollbacks: %w", err)
 	}
 
-	targetInstall, targetTTLMarker, found := findRollbackTarget(availableRollbacks, now, rollbackVersion)
+	targetInstall, targetTTLMarker, found := findRollbackTarget(RollbackTargets(log, topDir, availableRollbacks), now, rollbackVersion)
 	if !found {
 		return "", "", fmt.Errorf("version %q not listed among the available rollbacks: %w", rollbackVersion, ErrNoRollbacksAvailable)
 	}
@@ -177,7 +194,7 @@ func rollbackWithExistingMarker(ctx context.Context, log *logger.Logger, watcher
 			return fmt.Errorf("reading TTL markers: %w", err)
 		}
 		var found bool
-		selectedRollbackVersionedHome, _, found = findRollbackTarget(rollbacks, now, version)
+		selectedRollbackVersionedHome, _, found = findRollbackTarget(RollbackTargets(log, topDir, rollbacks), now, version)
 		if !found {
 			return fmt.Errorf("version %q not listed among the available rollbacks: %w", version, ErrNoRollbacksAvailable)
 		}

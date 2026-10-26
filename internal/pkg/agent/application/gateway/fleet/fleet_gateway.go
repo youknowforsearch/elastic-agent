@@ -15,6 +15,8 @@ import (
 
 	"github.com/elastic/elastic-agent-libs/logp"
 
+	"github.com/elastic/elastic-agent/internal/pkg/agent/application/paths"
+	"github.com/elastic/elastic-agent/internal/pkg/agent/application/upgrade"
 	"github.com/elastic/elastic-agent/internal/pkg/agent/application/upgrade/ttl"
 	agentclient "github.com/elastic/elastic-agent/pkg/control/v2/client"
 
@@ -430,7 +432,8 @@ func (f *FleetGateway) execute(ctx context.Context) (*fleetapi.CheckinResponse, 
 	if len(rollbacks) > 0 {
 		now := time.Now()
 		validRollbacks = make([]fleetapi.CheckinRollback, 0, len(rollbacks))
-		for _, rollback := range rollbacks {
+		// installs kept only to retain their logs are not rollback targets and must not be advertised
+		for _, rollback := range upgrade.RollbackTargets(f.log, paths.Top(), rollbacks) {
 			if rollback.ValidUntil.After(now) {
 				// map the `ttl.Marker` to the `fleetapi.CheckinRollback`
 				validRollbacks = append(validRollbacks, fleetapi.CheckinRollback{

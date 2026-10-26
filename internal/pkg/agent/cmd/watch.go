@@ -108,7 +108,7 @@ func newWatchCommandWithArgs(_ []string, streams *cli.IOStreams) *cobra.Command 
 			}
 
 			if err = withAppLocker(log, func() error {
-				return watchCmd(log, paths.Top(), cfg.Settings.Upgrade.Watcher, new(upgradeAgentWatcher), new(upgradeInstallationModifier))
+				return watchCmd(log, paths.Top(), cfg.Settings.Upgrade.Watcher, cfg.Settings.Upgrade.Rollback.LogsRetention(), new(upgradeAgentWatcher), new(upgradeInstallationModifier))
 			}); err != nil {
 				log.Errorw("Watch command failed", "error.message", err)
 				fmt.Fprintf(streams.Err, "Watch command failed: %v\n%s\n", err, troubleshootMessage)
@@ -145,6 +145,12 @@ func WithSkipRestart(skipRestart bool) upgrade.RollbackOption {
 	}
 }
 
+func WithRetainedHome(retainedHome string) upgrade.RollbackOption {
+	return func(ros upgrade.RollbackOptionSetter) {
+		ros.SetRetainedHome(retainedHome)
+	}
+}
+
 func WithRemoveMarker(removeMarker bool) upgrade.RollbackOption {
 	return func(ros upgrade.RollbackOptionSetter) {
 		ros.SetRemoveMarker(removeMarker)
@@ -174,7 +180,7 @@ func withAppLocker(log *logp.Logger, f func() error) error {
 	return f()
 }
 
-func watchCmd(log *logp.Logger, topDir string, cfg *configuration.UpgradeWatcherConfig, watcher agentWatcher, installModifier installationModifier) error {
+func watchCmd(log *logp.Logger, topDir string, cfg *configuration.UpgradeWatcherConfig, logsRetention time.Duration, watcher agentWatcher, installModifier installationModifier) error {
 	log.Infow("Upgrade Watcher started", "process.pid", os.Getpid(), "agent.version", version.GetAgentPackageVersion(), "config", cfg)
 	dataDir := paths.DataFrom(topDir)
 	marker, err := upgrade.LoadMarker(dataDir)
@@ -265,7 +271,15 @@ func watchCmd(log *logp.Logger, topDir string, cfg *configuration.UpgradeWatcher
 			return nil
 		}
 
-		err = installModifier.Rollback(ctx, log, client.New(), paths.Top(), marker.PrevVersionedHome, marker.PrevHash, WithRemoveMarker(removeMarker), WithPreRestartHook(revertRegistryHook))
+		// Keep the logs of the failed version: the rolled back agent runs a cleanup on startup that would otherwise
+		// delete its home before the rollback cleanup gets a chance to preserve the logs.
+		failedHome := failedHomeToRetain(marker)
+		preRestartHook := func(ctx context.Context, log *logger.Logger, topDirPath string) error {
+			retainFailedUpgradeLogs(log, topDirPath, marker, failedHome, logsRetention)
+			return revertRegistryHook(ctx, log, topDirPath)
+		}
+
+		err = installModifier.Rollback(ctx, log, client.New(), paths.Top(), marker.PrevVersionedHome, marker.PrevHash, WithRemoveMarker(removeMarker), WithPreRestartHook(preRestartHook), WithRetainedHome(failedHome))
 		if err != nil {
 			log.Error("rollback failed", err)
 			upgradeDetails.Fail(err)
@@ -295,6 +309,28 @@ func watchCmd(log *logp.Logger, topDir string, cfg *configuration.UpgradeWatcher
 		log.Error("cleanup after successful watch failed", err)
 	}
 	return err
+}
+
+// failedHomeToRetain returns the versioned home of the failed upgrade whose logs must be retained after a rollback,
+// or "" if there is none. The home we roll back to is never returned.
+func failedHomeToRetain(marker *upgrade.UpdateMarker) string {
+	failedHome := upgrade.FailedUpgradeHome(marker)
+	if failedHome == filepath.Clean(marker.PrevVersionedHome) {
+		return ""
+	}
+	return failedHome
+}
+
+// retainFailedUpgradeLogs marks the failed home so that the cleanups keep it for logsRetention.
+// It must run before the agent is restarted. Retaining logs must never block the rollback, a failure is only logged.
+func retainFailedUpgradeLogs(log *logger.Logger, topDirPath string, marker *upgrade.UpdateMarker, failedHome string, logsRetention time.Duration) {
+	if failedHome == "" {
+		return
+	}
+	err := upgrade.RetainFailedUpgradeLogs(log, topDirPath, failedHome, marker.Version, marker.Hash, time.Now().Add(logsRetention))
+	if err != nil {
+		log.Warnf("failed to retain logs of failed upgrade in %q: %v", failedHome, err)
+	}
 }
 
 func rollback(log *logp.Logger, topDir string, client client.Client, installModifier installationModifier, versionedHome string) error {
